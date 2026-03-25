@@ -1,6 +1,6 @@
 # qtail — Quiet Tail with On-Demand Output
 
-`qtail` is a small Rust CLI that reads from `stdin`, stays quiet most of the time, and only writes to `stderr` when:
+`qtail` is a small Rust CLI that reads from `stdin`, stays quiet most of the time, and writes visible output to `stderr` by default (or `stdout` with `--stdout`) when:
 
 - a line matches a filter pattern (disabled by default),
 - you press `space` (dump the last `N` lines), or
@@ -46,6 +46,7 @@ Options:
 
 - `-p, --pattern <PATTERN>`: substring match (case-insensitive), default empty (disabled)
 - `-n, --lines <N>`: ring buffer size, default `20`
+- `--stdout`: write visible output to `stdout` instead of `stderr`
 - `-h, --help`: help text
 
 Typical usage:
@@ -56,18 +57,24 @@ long_running_cli_tool 2>&1 | qtail
 
 ## Output Streams (important)
 
-`qtail` intentionally writes all visible output (matches + dumps) to `stderr`, not `stdout`.
+By default, `qtail` writes all visible output (matches + dumps) to `stderr`, not `stdout`.
 
 - `stdout`: always empty
 - `stderr`: `[match]` lines and dump blocks
 
-This keeps `stdout` clean, but if you want to pipe `qtail` output to another command, merge `stderr` into `stdout`:
+This keeps `stdout` clean. If you want to pipe `qtail` output downstream, either merge streams:
 
 ```bash
 long_running_cli_tool 2>&1 | qtail 2>&1 | tee qtail.log
 ```
 
-Or filter downstream:
+or use `--stdout` directly:
+
+```bash
+long_running_cli_tool 2>&1 | qtail --stdout | tee qtail.log
+```
+
+You can also filter downstream:
 
 ```bash
 long_running_cli_tool 2>&1 | qtail 2>&1 | grep -i match

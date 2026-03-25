@@ -3,7 +3,7 @@ use crossterm::event::{self, Event as CEvent, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{self, BufRead, IsTerminal};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -18,6 +18,8 @@ struct Args {
     pattern: String,
     #[arg(short = 'n', long, default_value_t = 20)]
     lines: usize,
+    #[arg(long, default_value_t = false)]
+    stdout: bool,
 }
 
 #[derive(Debug)]
@@ -30,7 +32,8 @@ fn main() {
     let args = Args::parse();
     let capacity = args.lines.max(1);
     let pattern_lower = args.pattern.to_lowercase();
-    let stderr_is_tty = io::stderr().is_terminal();
+    let output_target = OutputTarget::from_stdout_flag(args.stdout);
+    let output_is_tty = output_target.is_terminal();
 
     let buffer: Buffer = Arc::new(Mutex::new(VecDeque::with_capacity(capacity)));
     let (tx, rx) = mpsc::channel::<Event>();
@@ -55,7 +58,7 @@ fn main() {
 
     let mut saw_eof = false;
     while !saw_eof {
-        drain_events(&rx, &buffer, stderr_is_tty, &mut saw_eof);
+        drain_events(&rx, &buffer, output_target, output_is_tty, &mut saw_eof);
         if saw_eof {
             break;
         }
@@ -65,11 +68,11 @@ fn main() {
                 && let Ok(CEvent::Key(key_event)) = event::read()
             {
                 if is_ctrl_c(&key_event) {
-                    dump_buffer(&buffer, DumpKind::Exit);
+                    dump_buffer(&buffer, DumpKind::Exit, output_target);
                     break;
                 }
                 if key_event.code == KeyCode::Char(' ') {
-                    dump_buffer(&buffer, DumpKind::Refresh);
+                    dump_buffer(&buffer, DumpKind::Refresh, output_target);
                 }
             }
         } else {
@@ -135,12 +138,18 @@ fn line_matches(line: &str, pattern_lower: &str) -> bool {
     line.to_lowercase().contains(pattern_lower)
 }
 
-fn drain_events(rx: &Receiver<Event>, buffer: &Buffer, stderr_is_tty: bool, saw_eof: &mut bool) {
+fn drain_events(
+    rx: &Receiver<Event>,
+    buffer: &Buffer,
+    output_target: OutputTarget,
+    output_is_tty: bool,
+    saw_eof: &mut bool,
+) {
     loop {
         match rx.try_recv() {
-            Ok(Event::Match(line)) => print_match(&line, stderr_is_tty),
+            Ok(Event::Match(line)) => print_match(&line, output_target, output_is_tty),
             Ok(Event::Eof) => {
-                dump_buffer(buffer, DumpKind::Exit);
+                dump_buffer(buffer, DumpKind::Exit, output_target);
                 *saw_eof = true;
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
@@ -148,11 +157,11 @@ fn drain_events(rx: &Receiver<Event>, buffer: &Buffer, stderr_is_tty: bool, saw_
     }
 }
 
-fn print_match(line: &str, stderr_is_tty: bool) {
-    if stderr_is_tty {
-        eprintln!("\x1b[2;33m[match]\x1b[0m {line}");
+fn print_match(line: &str, output_target: OutputTarget, output_is_tty: bool) {
+    if output_is_tty {
+        write_line(output_target, &format!("\x1b[2;33m[match]\x1b[0m {line}"));
     } else {
-        eprintln!("[match] {line}");
+        write_line(output_target, &format!("[match] {line}"));
     }
 }
 
@@ -162,15 +171,50 @@ enum DumpKind {
     Exit,
 }
 
-fn dump_buffer(buffer: &Buffer, kind: DumpKind) {
+fn dump_buffer(buffer: &Buffer, kind: DumpKind, output_target: OutputTarget) {
     let lines = snapshot_buffer(buffer);
     let header = dump_header(lines.len(), kind);
-    eprintln!("{header}");
+    write_line(output_target, &header);
     for line in lines {
-        eprintln!("{line}");
+        write_line(output_target, &line);
     }
     if matches!(kind, DumpKind::Refresh) {
-        eprintln!("---");
+        write_line(output_target, "---");
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OutputTarget {
+    Stdout,
+    Stderr,
+}
+
+impl OutputTarget {
+    fn from_stdout_flag(use_stdout: bool) -> Self {
+        if use_stdout {
+            return Self::Stdout;
+        }
+        Self::Stderr
+    }
+
+    fn is_terminal(self) -> bool {
+        match self {
+            Self::Stdout => io::stdout().is_terminal(),
+            Self::Stderr => io::stderr().is_terminal(),
+        }
+    }
+}
+
+fn write_line(output_target: OutputTarget, line: &str) {
+    match output_target {
+        OutputTarget::Stdout => {
+            let mut stdout = io::stdout().lock();
+            writeln!(stdout, "{line}").expect("failed to write line to stdout");
+        }
+        OutputTarget::Stderr => {
+            let mut stderr = io::stderr().lock();
+            writeln!(stderr, "{line}").expect("failed to write line to stderr");
+        }
     }
 }
 
@@ -241,5 +285,17 @@ mod tests {
     fn dump_header_uses_actual_line_count() {
         let header = dump_header(5, DumpKind::Exit);
         assert_eq!(header, "--- last 5 lines (exit) ---");
+    }
+
+    #[test]
+    fn output_target_defaults_to_stderr() {
+        let output = OutputTarget::from_stdout_flag(false);
+        assert!(matches!(output, OutputTarget::Stderr));
+    }
+
+    #[test]
+    fn output_target_switches_to_stdout_when_enabled() {
+        let output = OutputTarget::from_stdout_flag(true);
+        assert!(matches!(output, OutputTarget::Stdout));
     }
 }
