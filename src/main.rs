@@ -58,7 +58,14 @@ fn main() {
 
     let mut saw_eof = false;
     while !saw_eof {
-        drain_events(&rx, &buffer, output_target, output_is_tty, &mut saw_eof);
+        drain_events(
+            &rx,
+            &buffer,
+            output_target,
+            output_is_tty,
+            raw_mode_enabled,
+            &mut saw_eof,
+        );
         if saw_eof {
             break;
         }
@@ -68,11 +75,11 @@ fn main() {
                 && let Ok(CEvent::Key(key_event)) = event::read()
             {
                 if is_ctrl_c(&key_event) {
-                    dump_buffer(&buffer, DumpKind::Exit, output_target);
+                    dump_buffer(&buffer, DumpKind::Exit, output_target, raw_mode_enabled);
                     break;
                 }
                 if key_event.code == KeyCode::Char(' ') {
-                    dump_buffer(&buffer, DumpKind::Refresh, output_target);
+                    dump_buffer(&buffer, DumpKind::Refresh, output_target, raw_mode_enabled);
                 }
             }
         } else {
@@ -143,13 +150,14 @@ fn drain_events(
     buffer: &Buffer,
     output_target: OutputTarget,
     output_is_tty: bool,
+    raw_mode: bool,
     saw_eof: &mut bool,
 ) {
     loop {
         match rx.try_recv() {
-            Ok(Event::Match(line)) => print_match(&line, output_target, output_is_tty),
+            Ok(Event::Match(line)) => print_match(&line, output_target, output_is_tty, raw_mode),
             Ok(Event::Eof) => {
-                dump_buffer(buffer, DumpKind::Exit, output_target);
+                dump_buffer(buffer, DumpKind::Exit, output_target, raw_mode);
                 *saw_eof = true;
             }
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
@@ -157,11 +165,15 @@ fn drain_events(
     }
 }
 
-fn print_match(line: &str, output_target: OutputTarget, output_is_tty: bool) {
+fn print_match(line: &str, output_target: OutputTarget, output_is_tty: bool, raw_mode: bool) {
     if output_is_tty {
-        write_line(output_target, &format!("\x1b[2;33m[match]\x1b[0m {line}"));
+        write_line(
+            output_target,
+            &format!("\x1b[2;33m[match]\x1b[0m {line}"),
+            raw_mode,
+        );
     } else {
-        write_line(output_target, &format!("[match] {line}"));
+        write_line(output_target, &format!("[match] {line}"), raw_mode);
     }
 }
 
@@ -171,15 +183,15 @@ enum DumpKind {
     Exit,
 }
 
-fn dump_buffer(buffer: &Buffer, kind: DumpKind, output_target: OutputTarget) {
+fn dump_buffer(buffer: &Buffer, kind: DumpKind, output_target: OutputTarget, raw_mode: bool) {
     let lines = snapshot_buffer(buffer);
     let header = dump_header(lines.len(), kind);
-    write_line(output_target, &header);
+    write_line(output_target, &header, raw_mode);
     for line in lines {
-        write_line(output_target, &line);
+        write_line(output_target, &line, raw_mode);
     }
     if matches!(kind, DumpKind::Refresh) {
-        write_line(output_target, "---");
+        write_line(output_target, "---", raw_mode);
     }
 }
 
@@ -205,15 +217,16 @@ impl OutputTarget {
     }
 }
 
-fn write_line(output_target: OutputTarget, line: &str) {
+fn write_line(output_target: OutputTarget, line: &str, raw_mode: bool) {
+    let eol = if raw_mode { "\r\n" } else { "\n" };
     match output_target {
         OutputTarget::Stdout => {
             let mut stdout = io::stdout().lock();
-            writeln!(stdout, "{line}").expect("failed to write line to stdout");
+            write!(stdout, "{line}{eol}").expect("failed to write to stdout");
         }
         OutputTarget::Stderr => {
             let mut stderr = io::stderr().lock();
-            writeln!(stderr, "{line}").expect("failed to write line to stderr");
+            write!(stderr, "{line}{eol}").expect("failed to write to stderr");
         }
     }
 }

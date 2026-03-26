@@ -17,3 +17,7 @@ fmt:
     cargo fmt --check
 
 check: fmt lint test
+
+cpu-regression:
+    cargo build
+    cargo test --test cpu_regression -- --ignored --nocapture
